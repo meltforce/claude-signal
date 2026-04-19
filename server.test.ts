@@ -26,6 +26,8 @@ import {
   loadConfig,
   makeOutboundSender,
   parseAllowlist,
+  parseMarkdownStyles,
+  textStylesToRpcStrings,
   resolveDefaultOnly,
   resolvePreferLastSender,
   safeFilename,
@@ -70,6 +72,7 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
     sendReadReceipts: false,
     typingTimeoutMs: 5_000,
     debugDumpEvents: false,
+    parseMarkdown: true,
     ...overrides,
   }
 }
@@ -801,6 +804,155 @@ describe('SignalRpcClient', () => {
 })
 
 // =============================================================================
+// parseMarkdownStyles — markdown → Signal textStyles
+// =============================================================================
+
+describe('parseMarkdownStyles', () => {
+  test('plain text passes through untouched', () => {
+    expect(parseMarkdownStyles('hello world')).toEqual({
+      text: 'hello world',
+      styles: [],
+    })
+  })
+
+  test('bold with **', () => {
+    expect(parseMarkdownStyles('say **hi** loud')).toEqual({
+      text: 'say hi loud',
+      styles: [{ start: 4, length: 2, style: 'BOLD' }],
+    })
+  })
+
+  test('italic with single *', () => {
+    expect(parseMarkdownStyles('this is *important*')).toEqual({
+      text: 'this is important',
+      styles: [{ start: 8, length: 9, style: 'ITALIC' }],
+    })
+  })
+
+  test('italic with underscores', () => {
+    expect(parseMarkdownStyles('say _hi_')).toEqual({
+      text: 'say hi',
+      styles: [{ start: 4, length: 2, style: 'ITALIC' }],
+    })
+  })
+
+  test('underscores in snake_case are literal', () => {
+    expect(parseMarkdownStyles('use snake_case_names here')).toEqual({
+      text: 'use snake_case_names here',
+      styles: [],
+    })
+  })
+
+  test('inline monospace', () => {
+    expect(parseMarkdownStyles('run `bun test` now')).toEqual({
+      text: 'run bun test now',
+      styles: [{ start: 4, length: 8, style: 'MONOSPACE' }],
+    })
+  })
+
+  test('fenced triple-backtick block', () => {
+    expect(parseMarkdownStyles('before ```const x = 1``` after')).toEqual({
+      text: 'before const x = 1 after',
+      styles: [{ start: 7, length: 11, style: 'MONOSPACE' }],
+    })
+  })
+
+  test('asterisks inside backticks are literal', () => {
+    expect(parseMarkdownStyles('`**not bold**` yes')).toEqual({
+      text: '**not bold** yes',
+      styles: [{ start: 0, length: 12, style: 'MONOSPACE' }],
+    })
+  })
+
+  test('strikethrough with ~~', () => {
+    expect(parseMarkdownStyles('~~old~~ new')).toEqual({
+      text: 'old new',
+      styles: [{ start: 0, length: 3, style: 'STRIKETHROUGH' }],
+    })
+  })
+
+  test('spoiler with ||', () => {
+    expect(parseMarkdownStyles('answer: ||42||')).toEqual({
+      text: 'answer: 42',
+      styles: [{ start: 8, length: 2, style: 'SPOILER' }],
+    })
+  })
+
+  test('overlapping bold and italic', () => {
+    const res = parseMarkdownStyles('**bold *both* bold**')
+    expect(res.text).toBe('bold both bold')
+    expect(res.styles).toContainEqual({ start: 0, length: 14, style: 'BOLD' })
+    expect(res.styles).toContainEqual({ start: 5, length: 4, style: 'ITALIC' })
+  })
+
+  test('multiple independent bold runs', () => {
+    const res = parseMarkdownStyles('**a** and **b**')
+    expect(res.text).toBe('a and b')
+    expect(res.styles).toEqual([
+      { start: 0, length: 1, style: 'BOLD' },
+      { start: 6, length: 1, style: 'BOLD' },
+    ])
+  })
+
+  test('unpaired ** becomes literal', () => {
+    expect(parseMarkdownStyles('only **one star here')).toEqual({
+      text: 'only **one star here',
+      styles: [],
+    })
+  })
+
+  test('unpaired single * becomes literal but prior pair still parses', () => {
+    const res = parseMarkdownStyles('*a* leftover *')
+    expect(res.text).toBe('a leftover *')
+    expect(res.styles).toEqual([{ start: 0, length: 1, style: 'ITALIC' }])
+  })
+
+  test('unclosed backtick is literal', () => {
+    expect(parseMarkdownStyles('the ` char alone')).toEqual({
+      text: 'the ` char alone',
+      styles: [],
+    })
+  })
+
+  test('empty delim pair emits no style', () => {
+    expect(parseMarkdownStyles('hi ****')).toEqual({
+      text: 'hi ',
+      styles: [],
+    })
+  })
+
+  test('mixed styles in one message', () => {
+    const res = parseMarkdownStyles(
+      'look: **bold**, *italic*, ~~strike~~, `code`, ||spoil||',
+    )
+    expect(res.text).toBe('look: bold, italic, strike, code, spoil')
+    expect(res.styles).toEqual([
+      { start: 6, length: 4, style: 'BOLD' },
+      { start: 12, length: 6, style: 'ITALIC' },
+      { start: 20, length: 6, style: 'STRIKETHROUGH' },
+      { start: 28, length: 4, style: 'MONOSPACE' },
+      { start: 34, length: 5, style: 'SPOILER' },
+    ])
+  })
+
+  test('unicode BMP characters are counted correctly', () => {
+    expect(parseMarkdownStyles('**ä é**')).toEqual({
+      text: 'ä é',
+      styles: [{ start: 0, length: 3, style: 'BOLD' }],
+    })
+  })
+
+  test('textStylesToRpcStrings formats as START:LENGTH:STYLE', () => {
+    expect(
+      textStylesToRpcStrings([
+        { start: 0, length: 4, style: 'BOLD' },
+        { start: 6, length: 6, style: 'ITALIC' },
+      ]),
+    ).toEqual(['0:4:BOLD', '6:6:ITALIC'])
+  })
+})
+
+// =============================================================================
 // makeOutboundSender — verifies the signal-cli param shape
 // =============================================================================
 
@@ -832,6 +984,60 @@ describe('makeOutboundSender', () => {
       quoteTimestamp: 99,
       quoteAuthor: 'XXX',
     })
+  })
+
+  test('sendMessage strips markdown and attaches textStyles', async () => {
+    const seen: Array<{ method: string; params: Record<string, unknown> }> = []
+    const fakeRpc = {
+      call: async (method: string, params: Record<string, unknown>) => {
+        seen.push({ method, params })
+        return { timestamp: 1 }
+      },
+    } as unknown as SignalRpcClient
+    const sender = makeOutboundSender(fakeRpc, makeConfig())
+    await sender.sendMessage({
+      recipient: '+491234567890',
+      message: 'please **try** `bun test` now',
+    })
+    expect(seen[0]!.params.message).toBe('please try bun test now')
+    expect(seen[0]!.params.textStyles).toEqual([
+      '7:3:BOLD',
+      '11:8:MONOSPACE',
+    ])
+  })
+
+  test('sendMessage omits textStyles when message is plain', async () => {
+    const seen: Array<{ method: string; params: Record<string, unknown> }> = []
+    const fakeRpc = {
+      call: async (method: string, params: Record<string, unknown>) => {
+        seen.push({ method, params })
+        return { timestamp: 1 }
+      },
+    } as unknown as SignalRpcClient
+    const sender = makeOutboundSender(fakeRpc, makeConfig())
+    await sender.sendMessage({ recipient: '+491234567890', message: 'hello' })
+    expect(seen[0]!.params.message).toBe('hello')
+    expect(seen[0]!.params.textStyles).toBeUndefined()
+  })
+
+  test('sendMessage passes markdown through untouched when parseMarkdown=false', async () => {
+    const seen: Array<{ method: string; params: Record<string, unknown> }> = []
+    const fakeRpc = {
+      call: async (method: string, params: Record<string, unknown>) => {
+        seen.push({ method, params })
+        return { timestamp: 1 }
+      },
+    } as unknown as SignalRpcClient
+    const sender = makeOutboundSender(
+      fakeRpc,
+      makeConfig({ parseMarkdown: false }),
+    )
+    await sender.sendMessage({
+      recipient: '+491234567890',
+      message: 'raw **bold**',
+    })
+    expect(seen[0]!.params.message).toBe('raw **bold**')
+    expect(seen[0]!.params.textStyles).toBeUndefined()
   })
 
   test('sendTyping passes stop=!typing', async () => {

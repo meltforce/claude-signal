@@ -60,6 +60,7 @@ bun install
 | `SIGNAL_SEND_READ_RECEIPTS`   |          | `1`                                                       | Set `0` to stop sending read receipts              |
 | `SIGNAL_TYPING_TIMEOUT_MS`    |          | `45000`                                                   | Max duration of an auto-typing pulse               |
 | `SIGNAL_DEBUG_DUMP_EVENTS`    |          | —                                                         | `1` to print every `receive` payload on stderr     |
+| `SIGNAL_PARSE_MARKDOWN`       |          | `1`                                                       | Parse markdown in outbound messages into Signal `textStyles`. `0` to send raw text |
 
 Required vars are validated at startup — the process exits immediately if
 anything is missing or malformed.
@@ -115,6 +116,39 @@ alias claude='command claude --dangerously-load-development-channels claude-syno
 
 Each outbound tool returns the `timestamp` of the sent message so Claude
 can react to or edit it later.
+
+## Markdown in outbound messages
+
+Signal doesn't render markdown syntax — `**bold**` arrives as literal
+asterisks. Under the hood the client uses separate "body ranges" metadata
+(start:length:style) to mark styled spans. `claude-signal` parses a
+subset of markdown on every outbound `reply` / `push`, strips the syntax
+from the text, and passes the ranges to signal-cli as `textStyles`.
+
+Supported:
+
+| Input             | Renders as     |
+| ----------------- | -------------- |
+| `**bold**`        | **bold**       |
+| `*italic*`        | *italic*       |
+| `_italic_`        | *italic*       |
+| `` `inline` ``    | `inline` (mono)|
+| ```` ```code``` ````  | multiline mono |
+| `~~strike~~`      | strikethrough  |
+| `\|\|spoiler\|\|` | tap-to-reveal  |
+
+Notes and limits:
+
+- `_` inside `snake_case` identifiers is left alone — word-boundary
+  check.
+- Unpaired delimiters (e.g. a lone `**`) are emitted as literal
+  characters.
+- No backslash escapes. Put `**` or `` ` `` inside a code span to keep it
+  literal.
+- Styles inside code spans are not parsed — `` `**x**` `` renders as
+  `**x**` in monospace.
+- Turn the parser off entirely with `SIGNAL_PARSE_MARKDOWN=0` (then all
+  markdown is sent as raw text).
 
 ## Inbound channel events
 

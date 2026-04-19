@@ -32,6 +32,7 @@ export type Config = {
   sendReadReceipts: boolean
   typingTimeoutMs: number
   debugDumpEvents: boolean
+  parseMarkdown: boolean
 }
 
 const E164_RE = /^\+[1-9][0-9]{6,14}$/
@@ -122,6 +123,7 @@ export function loadConfig(): Config {
       )
     : 45_000
   const debugDumpEvents = parseBool(process.env.SIGNAL_DEBUG_DUMP_EVENTS, false)
+  const parseMarkdown = parseBool(process.env.SIGNAL_PARSE_MARKDOWN, true)
 
   return {
     account: account!,
@@ -135,6 +137,7 @@ export function loadConfig(): Config {
     sendReadReceipts,
     typingTimeoutMs,
     debugDumpEvents,
+    parseMarkdown,
   }
 }
 
@@ -280,6 +283,217 @@ export function _setLastRecipient(r: string | undefined): void {
 }
 export function _getLastRecipient(): string | undefined {
   return lastRecipient
+}
+
+// =============================================================================
+// Markdown → Signal textStyles
+// =============================================================================
+// Signal does not render markdown syntax. It ships styled text as separate
+// "body ranges" metadata (start:length:style triples) alongside the plain
+// text. signal-cli exposes this as the `textStyles` JSON-RPC param.
+//
+// This parser converts the common markdown we already write in replies
+// (**bold**, *italic*, _italic_, `mono`, ```fenced```, ~~strike~~,
+// ||spoiler||) into a stripped-text + TextStyle[] pair so the message
+// renders in the Signal client instead of showing literal asterisks.
+//
+// Offsets are native JS string indices — UTF-16 code units, which matches
+// how signal-cli (Java) indexes. Works for BMP and supplementary-plane
+// characters.
+//
+// Limitations:
+//   - No backslash escapes. Write `**` inside a code span if you need it
+//     literal.
+//   - Unpaired delimiters (odd count for a given style) fall back to
+//     literal characters in the output.
+//   - Inside inline/fenced code, other markdown is not parsed.
+
+export type TextStyleName =
+  | 'BOLD'
+  | 'ITALIC'
+  | 'STRIKETHROUGH'
+  | 'MONOSPACE'
+  | 'SPOILER'
+
+export type TextStyle = {
+  start: number
+  length: number
+  style: TextStyleName
+}
+
+export type ParsedMessage = {
+  text: string
+  styles: TextStyle[]
+}
+
+type Token =
+  | { kind: 'text'; value: string }
+  | {
+      kind: 'delim'
+      delim: string
+      style: TextStyleName
+      verbatim: boolean
+    }
+
+// Ordered longest-first so `**` wins over `*`, `~~` over `~`, `||` over `|`,
+// and ``` over `.
+const DELIM_ORDER: ReadonlyArray<{
+  delim: string
+  style: TextStyleName
+  verbatim: boolean
+}> = [
+  { delim: '```', style: 'MONOSPACE', verbatim: true },
+  { delim: '**', style: 'BOLD', verbatim: false },
+  { delim: '~~', style: 'STRIKETHROUGH', verbatim: false },
+  { delim: '||', style: 'SPOILER', verbatim: false },
+  { delim: '`', style: 'MONOSPACE', verbatim: true },
+  { delim: '*', style: 'ITALIC', verbatim: false },
+  { delim: '_', style: 'ITALIC', verbatim: false },
+]
+
+const WORD_CHAR_RE = /[A-Za-z0-9]/
+
+function isWordChar(c: string | undefined): boolean {
+  return c !== undefined && WORD_CHAR_RE.test(c)
+}
+
+// Tokenize: classify each character as either literal text or a delimiter
+// token. Monospace delimiters (`, ```) are paired eagerly at tokenize time
+// and the content between them is emitted as a single verbatim text token —
+// no further markdown parsing inside code spans.
+function tokenize(input: string): Token[] {
+  const tokens: Token[] = []
+  let buf = ''
+  const flushText = () => {
+    if (buf.length > 0) {
+      tokens.push({ kind: 'text', value: buf })
+      buf = ''
+    }
+  }
+
+  let i = 0
+  while (i < input.length) {
+    // Fenced code block (```...```) — verbatim, eagerly matched
+    if (input.startsWith('```', i)) {
+      const close = input.indexOf('```', i + 3)
+      if (close === -1) {
+        // Unclosed: emit literally
+        buf += input[i]
+        i++
+        continue
+      }
+      flushText()
+      tokens.push({ kind: 'delim', delim: '```', style: 'MONOSPACE', verbatim: true })
+      tokens.push({ kind: 'text', value: input.substring(i + 3, close) })
+      tokens.push({ kind: 'delim', delim: '```', style: 'MONOSPACE', verbatim: true })
+      i = close + 3
+      continue
+    }
+    // Inline code (`...`) — verbatim, eagerly matched
+    if (input[i] === '`') {
+      const close = input.indexOf('`', i + 1)
+      if (close === -1) {
+        buf += input[i]
+        i++
+        continue
+      }
+      flushText()
+      tokens.push({ kind: 'delim', delim: '`', style: 'MONOSPACE', verbatim: true })
+      tokens.push({ kind: 'text', value: input.substring(i + 1, close) })
+      tokens.push({ kind: 'delim', delim: '`', style: 'MONOSPACE', verbatim: true })
+      i = close + 1
+      continue
+    }
+    // Try other delimiters longest-first
+    let matched: { delim: string; style: TextStyleName; verbatim: boolean } | null = null
+    for (const spec of DELIM_ORDER) {
+      if (spec.verbatim) continue // handled above
+      if (!input.startsWith(spec.delim, i)) continue
+      // Single `_` or `*` only counts as a delimiter when not sandwiched
+      // between two word characters — so `snake_case` stays literal.
+      if (spec.delim === '_' || spec.delim === '*') {
+        const prev = i > 0 ? input[i - 1] : undefined
+        const next = input[i + spec.delim.length]
+        if (isWordChar(prev) && isWordChar(next)) continue
+      }
+      matched = spec
+      break
+    }
+    if (matched) {
+      flushText()
+      tokens.push({
+        kind: 'delim',
+        delim: matched.delim,
+        style: matched.style,
+        verbatim: false,
+      })
+      i += matched.delim.length
+    } else {
+      buf += input[i]
+      i++
+    }
+  }
+  flushText()
+  return tokens
+}
+
+export function parseMarkdownStyles(input: string): ParsedMessage {
+  const tokens = tokenize(input)
+
+  // Non-verbatim delimiters must come in pairs (open, close, open, close...).
+  // If a delim appears an odd number of times, the LAST occurrence is
+  // reverted to literal text so earlier pairs still render.
+  const countByDelim = new Map<string, number>()
+  for (const t of tokens) {
+    if (t.kind !== 'delim' || t.verbatim) continue
+    countByDelim.set(t.delim, (countByDelim.get(t.delim) ?? 0) + 1)
+  }
+  const revertIdx = new Set<number>()
+  for (const [delim, count] of countByDelim) {
+    if (count % 2 === 0) continue
+    for (let k = tokens.length - 1; k >= 0; k--) {
+      const tk = tokens[k]!
+      if (tk.kind === 'delim' && !tk.verbatim && tk.delim === delim) {
+        revertIdx.add(k)
+        break
+      }
+    }
+  }
+
+  let text = ''
+  const styles: TextStyle[] = []
+  const pending = new Map<string, number>() // delim → start offset in output
+
+  for (let idx = 0; idx < tokens.length; idx++) {
+    const t = tokens[idx]!
+    if (revertIdx.has(idx)) {
+      text += (t as { delim: string }).delim
+      continue
+    }
+    if (t.kind === 'text') {
+      text += t.value
+      continue
+    }
+    const key = t.delim
+    const openStart = pending.get(key)
+    if (openStart === undefined) {
+      pending.set(key, text.length)
+    } else {
+      pending.delete(key)
+      const length = text.length - openStart
+      if (length > 0) {
+        styles.push({ start: openStart, length, style: t.style })
+      }
+    }
+  }
+
+  // Stable sort for deterministic output (start asc, then length desc)
+  styles.sort((a, b) => a.start - b.start || b.length - a.length)
+  return { text, styles }
+}
+
+export function textStylesToRpcStrings(styles: TextStyle[]): string[] {
+  return styles.map(s => `${s.start}:${s.length}:${s.style}`)
 }
 
 // =============================================================================
@@ -979,11 +1193,21 @@ export function makeOutboundSender(
     quoteMessage?: string
     editTimestamp?: number
   }): Promise<{ timestamp: number }> {
+    let messageText = args.message
+    let textStyles: string[] | undefined
+    if (config.parseMarkdown && args.message.length > 0) {
+      const parsed = parseMarkdownStyles(args.message)
+      messageText = parsed.text
+      if (parsed.styles.length > 0) {
+        textStyles = textStylesToRpcStrings(parsed.styles)
+      }
+    }
     const params: Record<string, unknown> = {
       account: config.account,
       recipient: [args.recipient],
-      message: args.message,
+      message: messageText,
     }
+    if (textStyles) params.textStyles = textStyles
     if (args.attachments && args.attachments.length > 0) {
       params.attachment = args.attachments
     }
