@@ -104,6 +104,12 @@ enable the channel capability during the research preview.
 - **Permission verdicts take precedence over channel events**: if the
   message matches `VERDICT_REGEX`, we emit only the permission
   notification — the reply text is never forwarded to Claude.
+- **Markdown → `textStyles`**: `sendMessage` runs outbound text through
+  `parseMarkdownStyles`, strips the syntax, and forwards paired ranges
+  as signal-cli's `textStyles` param. Signal clients don't render
+  markdown syntax — they need the body-ranges metadata. Disable with
+  `SIGNAL_PARSE_MARKDOWN=0`. Parser is UTF-16-offset-clean and leaves
+  `snake_case` underscores alone via a word-boundary rule.
 
 ## Deployment
 

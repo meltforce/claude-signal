@@ -133,6 +133,7 @@ Four tools exposed to Claude. All go through `SignalRpcClient.call('send'
     "account": "+493045310892",
     "recipient": ["+491234567890"],
     "message": "hallo",
+    "textStyles": ["0:5:BOLD"],
     "attachment": ["/tmp/claude-signal-inbox/1713-abc-pic.jpg"],
     "voiceNote": false,
     "quoteTimestamp": 1713182400000,
@@ -145,6 +146,24 @@ Four tools exposed to Claude. All go through `SignalRpcClient.call('send'
 
 Only fields relevant to the call are included. Unused params are
 omitted to keep the wire payload small and legible in logs.
+
+### Markdown parsing
+
+Outbound `message` strings run through `parseMarkdownStyles` before
+reaching signal-cli (unless `SIGNAL_PARSE_MARKDOWN=0`). Signal clients
+don't render markdown — they consume a separate `textStyles` list of
+`START:LENGTH:STYLE` triples (UTF-16 offsets into the stripped text).
+The parser handles `**bold**`, `*italic*`, `_italic_`, `` `mono` ``,
+```` ```fenced``` ````, `~~strike~~`, `||spoiler||`:
+
+- Verbatim delimiters (`` ` ``, ```` ``` ````) are eagerly paired, so
+  markdown inside a code span is not re-parsed.
+- Every non-verbatim delimiter type is paired independently; overlapping
+  spans (e.g. bold containing italic) work.
+- Unpaired delimiters fall back to literal characters.
+- A word-boundary check keeps `snake_case` identifiers from tripping the
+  `_italic_` rule.
+- No backslash escapes.
 
 ### Success and failure
 
