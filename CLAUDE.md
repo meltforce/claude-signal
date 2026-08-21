@@ -25,13 +25,19 @@ Two stages, both in `server.ts` and both exported:
   answer arrived with its hashes and its pipe art intact. A heading becomes a
   bold line without its hashes, `- item` becomes `• item`, `[text](url)`
   becomes `text (url)`, and a table loses its dashed separator row and is
-  monospaced whole, which is the only way its columns stay under each other.
-  Fenced code is passed through: inside it the syntax is the content.
+  monospaced whole, its pipes replaced by spaces that pad each column to its
+  widest cell. Fenced code is passed through: inside it the syntax is the
+  content.
 
 Signal has no table, no list and no heading — five body ranges over plain text
-and nothing else — so a monospaced block of pipe rows is as close as a table
-gets. Linus saw the result on 2026-08-21 and kept it: the offer to drop the
-pipes and pad the columns with spaces instead was declined, so leave them.
+and nothing else — so a monospaced block is as close as a table gets. Both
+renderings were put in front of Linus on 2026-08-21 and he chose the padded
+one: in a fixed-width font the pipes carry nothing, because the alignment
+already says where a column begins. The padding measures a cell *after* the
+character delimiters are removed, so `**Mo**` counts as two.
+
+This governs Signal alone. The web view renders markdown itself and shows a
+real table; that is deliberate and stays as it is.
 
 `parseMarkdown` runs the two in order and is what the sender calls. The block
 stage reports its styles as line numbers of its own output, which the second

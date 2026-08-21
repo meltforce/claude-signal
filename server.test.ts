@@ -33,6 +33,7 @@ import {
   parseMarkdown,
   parseMarkdownStyles,
   transformBlocks,
+  renderTable,
   flattenLinks,
   textStylesToRpcStrings,
   resolveDefaultOnly,
@@ -1294,17 +1295,42 @@ describe('transformBlocks', () => {
     )
   })
 
-  test('a table loses its separator row and is monospaced whole', () => {
+  test('a table becomes space-aligned columns, monospaced whole', () => {
     const input = '| Tag | Schlaf |\n|-----|--------|\n| Mo | 7:10 h |'
     const p = parseMarkdown(input)
-    expect(p.text).toBe('| Tag | Schlaf |\n| Mo | 7:10 h |')
+    // No pipes: the block is monospaced, so the alignment already says where a
+    // column begins. Linus chose this over the pipes on 2026-08-21.
+    expect(p.text).toBe('Tag  Schlaf\nMo   7:10 h')
     expect(p.styles).toEqual([
       { start: 0, length: p.text.length, style: 'MONOSPACE' },
     ])
   })
 
+  test('columns are padded to the widest cell, the last one not at all', () => {
+    expect(renderTable(['| a | lang |', '| bbbb | x |'])).toEqual([
+      'a     lang',
+      'bbbb  x',
+    ])
+  })
+
+  test('padding measures what is left after the delimiters are removed', () => {
+    // `**Mo**` is two characters wide on screen, not six, so it is padded to
+    // eight visible characters — which is six more spaces than "Dienstag" gets,
+    // and leaves both columns starting at the same place once the delimiters
+    // are gone.
+    expect(renderTable(['| **Mo** | 1 |', '| Dienstag | 2 |'])).toEqual([
+      '**Mo**        1',
+      'Dienstag  2',
+    ])
+  })
+
+  test('a short row keeps its own length rather than being filled up', () => {
+    expect(renderTable(['| a | b | c |', '| x |'])).toEqual(['a  b  c', 'x'])
+  })
+
   test('two tables separated by prose are two ranges', () => {
     const p = parseMarkdown('| a |\ntext\n| b |')
+    expect(p.text).toBe('a\ntext\nb')
     expect(p.styles.map(s => s.style)).toEqual(['MONOSPACE', 'MONOSPACE'])
   })
 

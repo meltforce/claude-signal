@@ -534,6 +534,52 @@ export function flattenLinks(line: string): string {
   )
 }
 
+/**
+ * The width a cell occupies once the character parser has removed its
+ * delimiters. `**Mo**` is four characters wide on screen, not eight, and a
+ * column padded to the raw length would sit crooked.
+ */
+function visibleWidth(cell: string): number {
+  return cell.replace(/\*\*|~~|[`*_]/g, '').length
+}
+
+/** The cells of one pipe row, without the pipes the outer edges carry. */
+function tableCells(row: string): string[] {
+  const cells = row.trim().split('|').map((c) => c.trim())
+  if (cells.length > 0 && cells[0] === '') cells.shift()
+  if (cells.length > 0 && cells[cells.length - 1] === '') cells.pop()
+  return cells
+}
+
+/**
+ * A markdown table as columns held apart by spaces rather than by pipes.
+ *
+ * The block is monospaced either way, and in a fixed-width font the pipes
+ * carry nothing — the alignment already says where a column begins. Linus
+ * looked at both on 2026-08-21 and chose this one. Two spaces between columns,
+ * no trailing padding on the last one, and a row with fewer cells than the
+ * header keeps its own length rather than being filled up.
+ */
+export function renderTable(rows: string[]): string[] {
+  const grid = rows.map(tableCells)
+  const widths: number[] = []
+  for (const row of grid) {
+    row.forEach((cell, i) => {
+      widths[i] = Math.max(widths[i] ?? 0, visibleWidth(cell))
+    })
+  }
+  return grid.map((row) =>
+    row
+      .map((cell, i) =>
+        i === row.length - 1
+          ? cell
+          : cell + ' '.repeat(Math.max(0, (widths[i] ?? 0) - visibleWidth(cell))),
+      )
+      .join('  ')
+      .trimEnd(),
+  )
+}
+
 export function transformBlocks(input: string): {
   text: string
   ranges: LineRange[]
@@ -543,12 +589,16 @@ export function transformBlocks(input: string): {
   const lines = input.split('\n')
   let inFence = false
   let tableStart = -1
+  let pendingRows: string[] = []
 
   const closeTable = (): void => {
     if (tableStart === -1) return
+    const rendered = renderTable(pendingRows)
+    for (let i = 0; i < rendered.length; i++) out[tableStart + i] = rendered[i]!
     if (out.length - 1 >= tableStart) {
       ranges.push({ firstLine: tableStart, lastLine: out.length - 1, style: 'MONOSPACE' })
     }
+    pendingRows = []
     tableStart = -1
   }
 
@@ -569,7 +619,8 @@ export function transformBlocks(input: string): {
       // the output rather than of the input.
       if (TABLE_SEPARATOR.test(line)) continue
       if (tableStart === -1) tableStart = out.length
-      out.push(flattenLinks(line))
+      pendingRows.push(flattenLinks(line))
+      out.push('') // placeholder, filled by closeTable once the widths are known
       continue
     }
     closeTable()
