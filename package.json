@@ -9,7 +9,8 @@
     "test": "bun test",
     "test:live": "SIGNAL_LIVE_TESTS=1 bun test",
     "schemas:check": "bun run scripts/schemas.ts check",
-    "schemas:refresh": "bun run scripts/schemas.ts refresh"
+    "schemas:refresh": "bun run scripts/schemas.ts refresh",
+    "markdown": "bun run scripts/markdown.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

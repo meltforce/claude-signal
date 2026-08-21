@@ -39,7 +39,12 @@ character delimiters are removed, so `**Mo**` counts as two.
 This governs Signal alone. The web view renders markdown itself and shows a
 real table; that is deliberate and stays as it is.
 
-`parseMarkdown` runs the two in order and is what the sender calls. The block
+`parseMarkdown` runs the two in order and is what the sender calls. Other
+senders on juno reach it through `bun run scripts/markdown.ts`, which reads
+stdin and prints `{message, textStyles}` named as signal-cli's `send` params:
+`bin/task-dispatch` and `juno-ingress` write to the socket directly and would
+otherwise ship the syntax as characters, which is how Linus found this on
+2026-08-21. The block
 stage reports its styles as line numbers of its own output, which the second
 stage resolves into offsets — that works because neither stage changes the
 number of lines, and the table's separator row is dropped before the numbering
