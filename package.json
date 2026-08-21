@@ -7,7 +7,9 @@
     "start": "bun run server.ts",
     "check": "bunx tsc --noEmit",
     "test": "bun test",
-    "test:live": "SIGNAL_LIVE_TESTS=1 bun test"
+    "test:live": "SIGNAL_LIVE_TESTS=1 bun test",
+    "schemas:check": "bun run scripts/schemas.ts check",
+    "schemas:refresh": "bun run scripts/schemas.ts refresh"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

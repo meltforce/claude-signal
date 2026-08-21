@@ -14,6 +14,29 @@ the channel-protocol shape is identical, only the transport changes.
 - Single-user-ish: one `SIGNAL_DEFAULT_RECIPIENT`, a whitelist of allowed
   senders, `lastRecipient` tracked in-memory.
 
+## The envelope format is checked, not assumed
+
+`ENVELOPE_FIELDS` in `server.ts` lists every field this adapter reads off an
+envelope, and its type binds it to `SignalEnvelope`, so the two cannot drift.
+The test *the envelope contract* walks that list against the schemas in
+`schemas/`, which signal-cli publishes per release since 0.14.6.
+
+The failure this guards against is silent. When the envelope format moved once
+before, inbound DMs simply stopped arriving: no error, no log line, outbound
+unaffected, and the adapter looking for a field that was no longer there.
+Nothing on this host would have noticed.
+
+juno updates signal-cli daily and unattended, so the vendored set needs a
+watchdog of its own: `bun run schemas:check` compares the installed version's
+published schemas against `schemas/` and exits non-zero when a schema differs.
+It runs from juno's scheduler after the update timer (`briefings.yaml` →
+`signal-schemas`). `bun run schemas:refresh` adopts the installed version's set
+— read the diff it prints against `ENVELOPE_FIELDS` before trusting it.
+
+A field the adapter reads that the schema does not have is marked `'legacy'`
+rather than `'schema'`; the tests also check the reverse, so a marker that has
+become wrong fails too.
+
 ## Tech stack
 
 - Bun + TypeScript strict mode. No bundler; Bun runs `.ts` directly.
@@ -30,6 +53,9 @@ directly without spinning up the real MCP transport.
 
 - `server.ts` — everything (config, RPC client, inbound/outbound, MCP)
 - `server.test.ts` — unit + mock integration
+- `schemas/` — signal-cli's own JSON schemas for the envelope format, vendored
+  from the release asset of the version in `schemas/VERSION`
+- `scripts/schemas.ts` — `bun run schemas:check` / `schemas:refresh`
 - `docs/claude-signal-spec.md` — the authoritative spec
 - `README.md` — user-facing install/run docs
 - `package.json` / `tsconfig.json` — copied from claude-synochat,

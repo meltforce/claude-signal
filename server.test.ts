@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
   mkdtempSync,
+  readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
@@ -8,6 +10,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer, type Server as NetServer } from 'node:net'
 import {
+  ENVELOPE_FIELDS,
+  type FieldCheck,
   _resetDedupe,
   _resetLastRecipient,
   _resetTypingPulses,
@@ -684,7 +688,7 @@ describe('handleReceiveNotification', () => {
       sender,
     )
     await handleReceiveNotification(
-      { account: '+49', envelope: { sourceNumber: '+491234567890', receiptMessage: { type: 'read', timestamps: [1] } } },
+      { account: '+49', envelope: { sourceNumber: '+491234567890', receiptMessage: { isRead: true, when: 1, timestamps: [1] } } },
       makeConfig(),
       sink,
       sender,
@@ -1122,5 +1126,106 @@ describe('loadConfig', () => {
     process.env.SIGNAL_ACCOUNT = 'not-a-phone'
     process.env.SIGNAL_ALLOWED_SENDERS = '+491234567890'
     expect(() => loadConfig()).toThrow(/E\.164/)
+  })
+})
+
+
+// =============================================================================
+// The envelope contract
+// =============================================================================
+//
+// signal-cli publishes the JSON schemas for its envelope format as a release
+// asset (since 0.14.6); `schemas/` holds the set for the version named in
+// `schemas/VERSION`. This walks every field the adapter reads against them.
+//
+// The failure it exists for is silent. When the envelope format moved once
+// before, inbound DMs stopped arriving: no error, no log line, outbound
+// unaffected — the adapter simply found nothing where it looked. A test that
+// compares its assumptions against the published format turns that into a red
+// test at update time.
+
+describe('the envelope contract', () => {
+  const dir = join(import.meta.dir, 'schemas')
+
+  const schemas: Record<string, Record<string, unknown>> = {}
+  for (const file of readdirSync(dir)) {
+    if (!file.endsWith('.schema.json')) continue
+    schemas[file] = JSON.parse(readFileSync(join(dir, file), 'utf8'))
+  }
+
+  /** A schema node, with a `$ref` to another file followed once. */
+  function resolve(node: unknown): Record<string, unknown> | null {
+    if (!node || typeof node !== 'object') return null
+    const ref = (node as { $ref?: string }).$ref
+    if (typeof ref === 'string') {
+      const target = schemas[ref.replace(/^\.\//, '')]
+      return target ?? null
+    }
+    return node as Record<string, unknown>
+  }
+
+  function properties(schema: Record<string, unknown> | null): Record<string, unknown> {
+    return (schema?.properties as Record<string, unknown>) ?? {}
+  }
+
+  /** Every field the tree declares, as `dotted.path` → what is claimed of it. */
+  function walk(
+    tree: Record<string, unknown>,
+    schema: Record<string, unknown> | null,
+    prefix = '',
+  ): { path: string; check: FieldCheck | 'nested'; known: boolean }[] {
+    const props = properties(schema)
+    const out: { path: string; check: FieldCheck | 'nested'; known: boolean }[] = []
+    for (const [name, value] of Object.entries(tree)) {
+      const path = prefix ? `${prefix}.${name}` : name
+      const known = Object.hasOwn(props, name)
+      if (typeof value === 'string') {
+        out.push({ path, check: value as FieldCheck, known })
+        continue
+      }
+      out.push({ path, check: 'nested', known })
+      out.push(
+        ...walk(value as Record<string, unknown>, resolve(props[name]), path),
+      )
+    }
+    return out
+  }
+
+  const fields = walk(
+    ENVELOPE_FIELDS as unknown as Record<string, unknown>,
+    schemas['message-envelope.schema.json'] ?? null,
+  )
+
+  test('the vendored schemas are present and name their version', () => {
+    expect(Object.keys(schemas).length).toBeGreaterThan(20)
+    expect(schemas['message-envelope.schema.json']).toBeDefined()
+    expect(readFileSync(join(dir, 'VERSION'), 'utf8').trim()).toMatch(/^\d+\.\d+\.\d+/)
+  })
+
+  test('every field the adapter reads is in the published format', () => {
+    const missing = fields
+      .filter(f => f.check !== 'legacy' && !f.known)
+      .map(f => f.path)
+    // A name here means signal-cli no longer sends the field, or renamed it.
+    // Read the release notes for the version in schemas/VERSION before
+    // changing the adapter — a wrong guess is another silent inbound outage.
+    expect(missing).toEqual([])
+  })
+
+  test('a field marked legacy really is absent, so the marker stays honest', () => {
+    const stale = fields.filter(f => f.check === 'legacy' && f.known).map(f => f.path)
+    // A legacy alias that has reappeared in the schema is documented wrongly:
+    // it is current, and should be marked 'schema'.
+    expect(stale).toEqual([])
+  })
+
+  test('the fields carrying the sender and the text are checked, not assumed', () => {
+    // Guards the guard: an empty or accidentally-emptied tree would make the
+    // test above pass while checking nothing.
+    const paths = fields.map(f => f.path)
+    expect(paths).toContain('sourceUuid')
+    expect(paths).toContain('dataMessage.message')
+    expect(paths).toContain('dataMessage.attachments')
+    expect(paths).toContain('dataMessage.reaction')
   })
 })

@@ -810,9 +810,91 @@ export type SignalEnvelope = {
     dataMessage?: SignalEnvelope['dataMessage']
   }
   typingMessage?: unknown
-  receiptMessage?: { type?: string; timestamps?: number[] }
+  // No `type` here: signal-cli reports a receipt as three booleans, and the
+  // debug line below printed `?` for as long as it read one (found 2026-08-21
+  // by checking this type against the published schema).
+  receiptMessage?: {
+    isDelivery?: boolean
+    isRead?: boolean
+    isViewed?: boolean
+    when?: number
+    timestamps?: number[]
+  }
   syncMessage?: unknown
   storyMessage?: unknown
+}
+
+/**
+ * Every field this adapter reads off an envelope, as a tree that mirrors
+ * `SignalEnvelope`.
+ *
+ * It exists to be checked against signal-cli's own JSON schemas, which the
+ * project publishes as a release asset (`…-json-schemas.tar.gz`) since 0.14.6
+ * and which are vendored under `schemas/`. The test *the envelope contract*
+ * walks this tree and fails when a field is no longer in the format — the
+ * failure mode it guards against is silent: when the envelope format moved
+ * once before, inbound DMs stopped arriving, outbound kept working, and
+ * nothing logged an error.
+ *
+ * A leaf is `'schema'` when signal-cli must still document the field, and
+ * `'legacy'` when the adapter reads it as an older alias and its absence from
+ * the schema is expected rather than a regression.
+ *
+ * The type binds the tree to `SignalEnvelope`: adding a field there without
+ * adding it here is a compile error, so the two cannot drift apart.
+ */
+export type FieldCheck = 'schema' | 'legacy'
+
+type FieldTree<T> = {
+  [K in keyof Required<T>]: FieldCheck | FieldTree<unknown>
+}
+
+export const ENVELOPE_FIELDS: FieldTree<SignalEnvelope> = {
+  source: 'schema',
+  sourceNumber: 'schema',
+  sourceUuid: 'schema',
+  sourceName: 'schema',
+  sourceDevice: 'schema',
+  timestamp: 'schema',
+  dataMessage: {
+    timestamp: 'schema',
+    message: 'schema',
+    attachments: 'schema',
+    groupInfo: 'schema',
+    mentions: 'schema',
+    quote: 'schema',
+    reaction: 'schema',
+    sticker: 'schema',
+    viewOnce: 'schema',
+    // Read alongside `viewOnce` and absent from the schema since at least
+    // 0.14.7. Kept because it costs one `||` and an envelope from an older
+    // signal-cli may still carry it.
+    isViewOnce: 'legacy',
+  },
+  editMessage: {
+    targetSentTimestamp: 'schema',
+    dataMessage: 'schema',
+  },
+  typingMessage: 'schema',
+  receiptMessage: {
+    isDelivery: 'schema',
+    isRead: 'schema',
+    isViewed: 'schema',
+    when: 'schema',
+    timestamps: 'schema',
+  },
+  syncMessage: 'schema',
+  storyMessage: 'schema',
+}
+
+/** Which of the three receipt flags is set, for the debug line. */
+export function receiptKind(
+  rm: NonNullable<SignalEnvelope['receiptMessage']>,
+): string {
+  if (rm.isDelivery) return 'delivery'
+  if (rm.isRead) return 'read'
+  if (rm.isViewed) return 'viewed'
+  return 'unknown'
 }
 
 export type ReceivePayload = {
@@ -906,7 +988,7 @@ export async function handleReceiveNotification(
     const rm = env.receiptMessage
     if (config.debugDumpEvents) {
       console.error(
-        `[claude-signal] receipt ${rm.type ?? '?'} from ${
+        `[claude-signal] receipt ${receiptKind(rm)} from ${
           env.sourceNumber ?? env.sourceUuid ?? '?'
         } for ts ${rm.timestamps?.join(',') ?? '?'}`,
       )
