@@ -30,7 +30,10 @@ import {
   loadConfig,
   makeOutboundSender,
   parseAllowlist,
+  parseMarkdown,
   parseMarkdownStyles,
+  transformBlocks,
+  flattenLinks,
   textStylesToRpcStrings,
   resolveDefaultOnly,
   resolvePreferLastSender,
@@ -1227,5 +1230,104 @@ describe('the envelope contract', () => {
     expect(paths).toContain('dataMessage.message')
     expect(paths).toContain('dataMessage.attachments')
     expect(paths).toContain('dataMessage.reaction')
+  })
+})
+
+
+// =============================================================================
+// Block markdown
+// =============================================================================
+//
+// The character parser above leaves everything markdown does per line as its
+// own syntax. Signal renders none of it, so a specialist's answer arrived with
+// its hashes, its hyphens and its pipe art intact.
+
+describe('transformBlocks', () => {
+  const styled = (input: string): string => {
+    const p = parseMarkdown(input)
+    return p.styles
+      .map(s => `${s.style}:${JSON.stringify(p.text.substr(s.start, s.length))}`)
+      .join(' | ')
+  }
+
+  test('a heading becomes a bold line without its hashes', () => {
+    const p = parseMarkdown('## Trainingswoche')
+    expect(p.text).toBe('Trainingswoche')
+    expect(p.styles).toEqual([{ start: 0, length: 14, style: 'BOLD' }])
+  })
+
+  test('every heading level is a heading', () => {
+    for (const hashes of ['#', '###', '######']) {
+      expect(parseMarkdown(`${hashes} Titel`).text).toBe('Titel')
+    }
+  })
+
+  test('a hash without a space is not a heading', () => {
+    expect(parseMarkdown('#hashtag bleibt').text).toBe('#hashtag bleibt')
+  })
+
+  test('an empty heading produces no zero-length style', () => {
+    // Signal rejects the whole message on a zero-length range rather than
+    // ignoring the range.
+    const p = parseMarkdown('##  \nText')
+    expect(p.styles).toEqual([])
+  })
+
+  test('bullets become bullet points, indentation kept', () => {
+    const p = parseMarkdown('- eins\n* zwei\n  + drei')
+    expect(p.text).toBe('• eins\n• zwei\n  • drei')
+  })
+
+  test('a horizontal rule is not a bullet', () => {
+    expect(parseMarkdown('---').text).toBe('---')
+  })
+
+  test('a link is flattened to text and url', () => {
+    expect(flattenLinks('siehe [FreeReps](https://x.example/d).')).toBe(
+      'siehe FreeReps (https://x.example/d).',
+    )
+  })
+
+  test('a link whose text is its url is not doubled', () => {
+    expect(flattenLinks('[https://x.example](https://x.example)')).toBe(
+      'https://x.example',
+    )
+  })
+
+  test('a table loses its separator row and is monospaced whole', () => {
+    const input = '| Tag | Schlaf |\n|-----|--------|\n| Mo | 7:10 h |'
+    const p = parseMarkdown(input)
+    expect(p.text).toBe('| Tag | Schlaf |\n| Mo | 7:10 h |')
+    expect(p.styles).toEqual([
+      { start: 0, length: p.text.length, style: 'MONOSPACE' },
+    ])
+  })
+
+  test('two tables separated by prose are two ranges', () => {
+    const p = parseMarkdown('| a |\ntext\n| b |')
+    expect(p.styles.map(s => s.style)).toEqual(['MONOSPACE', 'MONOSPACE'])
+  })
+
+  test('fenced code is left alone', () => {
+    const p = parseMarkdown('```\n- not a bullet\n## not a heading\n```')
+    expect(p.text).toBe('\n- not a bullet\n## not a heading\n')
+    expect(p.styles.map(s => s.style)).toEqual(['MONOSPACE'])
+  })
+
+  test('block and character styles land on the right offsets together', () => {
+    expect(styled('# Titel\n\n- **fett** und `mono`')).toBe(
+      'BOLD:"Titel" | BOLD:"fett" | MONOSPACE:"mono"',
+    )
+  })
+
+  test('the transform preserves the line count it reports ranges against', () => {
+    const input = '# H\n- a\n| x |\n|---|\n| y |\nende'
+    const { text, ranges } = transformBlocks(input)
+    const lines = text.split('\n')
+    for (const r of ranges) {
+      expect(r.firstLine).toBeGreaterThanOrEqual(0)
+      expect(r.lastLine).toBeLessThan(lines.length)
+    }
+    expect(parseMarkdown(input).text.split('\n').length).toBe(lines.length)
   })
 })

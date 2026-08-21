@@ -492,6 +492,139 @@ export function parseMarkdownStyles(input: string): ParsedMessage {
   return { text, styles }
 }
 
+// -----------------------------------------------------------------------------
+// Block markdown
+// -----------------------------------------------------------------------------
+// The parser above covers the character level — **bold**, `mono`, ~~strike~~.
+// Everything markdown does per line went out as its own syntax: a specialist's
+// answer arrived as "## Trainingswoche" with the hashes, bullets as hyphens,
+// links as "[text](url)", and a table as pipe art, which is the worst of them
+// on a phone. Signal has no heading and no list style, so this converts them
+// into what Signal does have:
+//
+//   # Heading      -> the line, bold, hashes removed
+//   - item         -> • item
+//   [text](url)    -> text (url), and a bare url where the two are equal
+//   | a | b |      -> the table without its dashed separator row, monospaced,
+//                     which is the only way the columns stay under each other
+//
+// Fenced code is passed through untouched: inside it the syntax is the content.
+// Line count is preserved between this stage and the character parser, which is
+// what lets a whole-line style be expressed as a line number here and resolved
+// to an offset after the delimiters are gone.
+
+/** A style covering whole lines of the block-transformed text. */
+export type LineRange = {
+  firstLine: number
+  lastLine: number
+  style: TextStyleName
+}
+
+const HEADING = /^(#{1,6})\s+(.*)$/
+const BULLET = /^(\s*)[-*+]\s+(?=\S)(.*)$/
+const TABLE_ROW = /^\s*\|.*\|\s*$/
+const TABLE_SEPARATOR = /^\s*\|[\s:|-]+\|\s*$/
+const FENCE = /^\s*```/
+const LINK = /\[([^\]\n]+)\]\((\S+?)\)/g
+
+/** `[text](url)` as something readable in a client that renders neither. */
+export function flattenLinks(line: string): string {
+  return line.replace(LINK, (_m, text: string, url: string) =>
+    text.trim() === url.trim() ? url : `${text} (${url})`,
+  )
+}
+
+export function transformBlocks(input: string): {
+  text: string
+  ranges: LineRange[]
+} {
+  const out: string[] = []
+  const ranges: LineRange[] = []
+  const lines = input.split('\n')
+  let inFence = false
+  let tableStart = -1
+
+  const closeTable = (): void => {
+    if (tableStart === -1) return
+    if (out.length - 1 >= tableStart) {
+      ranges.push({ firstLine: tableStart, lastLine: out.length - 1, style: 'MONOSPACE' })
+    }
+    tableStart = -1
+  }
+
+  for (const line of lines) {
+    if (FENCE.test(line)) {
+      closeTable()
+      inFence = !inFence
+      out.push(line)
+      continue
+    }
+    if (inFence) {
+      out.push(line)
+      continue
+    }
+    if (TABLE_ROW.test(line)) {
+      // The separator carries no data and reads as noise once the table is in
+      // a fixed-width font; dropping it is why the ranges below count lines of
+      // the output rather than of the input.
+      if (TABLE_SEPARATOR.test(line)) continue
+      if (tableStart === -1) tableStart = out.length
+      out.push(flattenLinks(line))
+      continue
+    }
+    closeTable()
+    const heading = HEADING.exec(line)
+    if (heading) {
+      out.push(flattenLinks(heading[2]!))
+      ranges.push({ firstLine: out.length - 1, lastLine: out.length - 1, style: 'BOLD' })
+      continue
+    }
+    const bullet = BULLET.exec(line)
+    if (bullet) {
+      out.push(`${bullet[1]}• ${flattenLinks(bullet[2]!)}`)
+      continue
+    }
+    out.push(flattenLinks(line))
+  }
+  closeTable()
+  return { text: out.join('\n'), ranges }
+}
+
+/** The character offset each line starts at, and where the last one ends. */
+function lineOffsets(text: string): number[] {
+  const offsets = [0]
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '\n') offsets.push(i + 1)
+  }
+  return offsets
+}
+
+/**
+ * Markdown as Signal renders it: the block level resolved into whole-line
+ * styles, the character level into ranges, both as one `textStyles` list.
+ *
+ * This is what the sender calls. `parseMarkdownStyles` stays the character
+ * half on its own, because that is the piece worth testing in isolation.
+ */
+export function parseMarkdown(input: string): ParsedMessage {
+  const blocks = transformBlocks(input)
+  const inline = parseMarkdownStyles(blocks.text)
+  const offsets = lineOffsets(inline.text)
+  const lines = inline.text.split('\n')
+  const styles = [...inline.styles]
+  for (const range of blocks.ranges) {
+    const start = offsets[range.firstLine]
+    const lastStart = offsets[range.lastLine]
+    if (start === undefined || lastStart === undefined) continue
+    const end = lastStart + (lines[range.lastLine]?.length ?? 0)
+    // A heading whose text vanished — "##" alone — would be a zero-length
+    // range, which Signal rejects on the whole message rather than ignoring.
+    if (end > start) styles.push({ start, length: end - start, style: range.style })
+  }
+  styles.sort((a, b) => a.start - b.start || b.length - a.length)
+  return { text: inline.text, styles }
+}
+
 export function textStylesToRpcStrings(styles: TextStyle[]): string[] {
   return styles.map(s => `${s.start}:${s.length}:${s.style}`)
 }
@@ -1278,7 +1411,7 @@ export function makeOutboundSender(
     let messageText = args.message
     let textStyles: string[] | undefined
     if (config.parseMarkdown && args.message.length > 0) {
-      const parsed = parseMarkdownStyles(args.message)
+      const parsed = parseMarkdown(args.message)
       messageText = parsed.text
       if (parsed.styles.length > 0) {
         textStyles = textStylesToRpcStrings(parsed.styles)

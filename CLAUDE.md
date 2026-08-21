@@ -14,6 +14,26 @@ the channel-protocol shape is identical, only the transport changes.
 - Single-user-ish: one `SIGNAL_DEFAULT_RECIPIENT`, a whitelist of allowed
   senders, `lastRecipient` tracked in-memory.
 
+## Outbound markdown is rendered, not shipped as syntax
+
+Two stages, both in `server.ts` and both exported:
+
+- `parseMarkdownStyles` is the character level — `**bold**`, `*italic*`,
+  `` `mono` ``, `~~strike~~`, `||spoiler||`, fenced code — turned into Signal's
+  `textStyles` ranges.
+- `transformBlocks` is the line level, added 2026-08-21 after a specialist's
+  answer arrived with its hashes and its pipe art intact. A heading becomes a
+  bold line without its hashes, `- item` becomes `• item`, `[text](url)`
+  becomes `text (url)`, and a table loses its dashed separator row and is
+  monospaced whole, which is the only way its columns stay under each other.
+  Fenced code is passed through: inside it the syntax is the content.
+
+`parseMarkdown` runs the two in order and is what the sender calls. The block
+stage reports its styles as line numbers of its own output, which the second
+stage resolves into offsets — that works because neither stage changes the
+number of lines, and the table's separator row is dropped before the numbering
+is taken.
+
 ## The envelope format is checked, not assumed
 
 `ENVELOPE_FIELDS` in `server.ts` lists every field this adapter reads off an
