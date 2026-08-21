@@ -28,6 +28,11 @@ Two stages, both in `server.ts` and both exported:
   monospaced whole, which is the only way its columns stay under each other.
   Fenced code is passed through: inside it the syntax is the content.
 
+Signal has no table, no list and no heading — five body ranges over plain text
+and nothing else — so a monospaced block of pipe rows is as close as a table
+gets. Linus saw the result on 2026-08-21 and kept it: the offer to drop the
+pipes and pad the columns with spaces instead was declined, so leave them.
+
 `parseMarkdown` runs the two in order and is what the sender calls. The block
 stage reports its styles as line numbers of its own output, which the second
 stage resolves into offsets — that works because neither stage changes the
