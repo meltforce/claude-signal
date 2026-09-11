@@ -17,6 +17,9 @@
         "id": {
             "type": "string"
         },
+        "isVoiceNote": {
+            "type": "boolean"
+        },
         "size": {
             "type": "integer"
         },
@@ -27,6 +30,9 @@
             "type": "integer"
         }
     },
+    "required": [
+        "isVoiceNote"
+    ],
     "title": "Attachment",
     "type": "object"
 }

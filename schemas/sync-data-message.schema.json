@@ -32,10 +32,22 @@
         "expiresInSeconds": {
             "type": "integer"
         },
+        "groupCallUpdate": {
+            "$ref": "group-call-update.schema.json"
+        },
         "groupInfo": {
             "$ref": "group-info.schema.json"
         },
+        "hasProfileKey": {
+            "type": "boolean"
+        },
+        "isEndSession": {
+            "type": "boolean"
+        },
         "isExpirationUpdate": {
+            "type": "boolean"
+        },
+        "isProfileKeyUpdate": {
             "type": "boolean"
         },
         "mentions": {

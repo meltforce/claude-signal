@@ -1,0 +1,11 @@
+{
+    "$id": "group-call-update.schema.json",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+        "eraId": {
+            "type": "string"
+        }
+    },
+    "title": "GroupCallUpdate",
+    "type": "object"
+}
