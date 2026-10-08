@@ -13,9 +13,13 @@
         },
         "targetSentTimestamp": {
             "type": "integer"
+        },
+        "targetTimestamp": {
+            "type": "integer"
         }
     },
     "required": [
+        "targetTimestamp",
         "targetSentTimestamp"
     ],
     "title": "AdminDelete",
