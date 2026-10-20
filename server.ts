@@ -15,6 +15,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { copyFile } from 'node:fs/promises'
+import { spawn } from 'node:child_process'
 
 // =============================================================================
 // Config
@@ -33,6 +34,8 @@ export type Config = {
   typingTimeoutMs: number
   debugDumpEvents: boolean
   parseMarkdown: boolean
+  /** Executable called as `<cmd> <audio path>` for a voice note; null = off. */
+  transcribeCmd: string | null
 }
 
 const E164_RE = /^\+[1-9][0-9]{6,14}$/
@@ -124,6 +127,7 @@ export function loadConfig(): Config {
     : 45_000
   const debugDumpEvents = parseBool(process.env.SIGNAL_DEBUG_DUMP_EVENTS, false)
   const parseMarkdown = parseBool(process.env.SIGNAL_PARSE_MARKDOWN, true)
+  const transcribeCmd = process.env.SIGNAL_TRANSCRIBE_CMD?.trim() || null
 
   return {
     account: account!,
@@ -138,6 +142,7 @@ export function loadConfig(): Config {
     typingTimeoutMs,
     debugDumpEvents,
     parseMarkdown,
+    transcribeCmd,
   }
 }
 
@@ -1150,6 +1155,70 @@ export type HandleResult = {
   reason?: string
 }
 
+// =============================================================================
+// Voice-note transcription
+// =============================================================================
+
+/** transcribe-voice's own HTTP timeout is 120 s; this leaves room for ffmpeg. */
+export const TRANSCRIBE_TIMEOUT_MS = 150_000
+
+export type TranscribeRun = { code: number | null; stdout: string; stderr: string; error?: string }
+
+export type Transcription =
+  | { status: 'ok'; text: string }
+  | { status: 'refused'; reason: string }
+  | { status: 'failed'; reason: string }
+
+/** Run `cmd path` without a shell, with a timeout. Never throws. */
+export function runTranscribe(
+  cmd: string,
+  path: string,
+  timeoutMs = TRANSCRIBE_TIMEOUT_MS,
+): Promise<TranscribeRun> {
+  return new Promise(resolve => {
+    let stdout = ''
+    let stderr = ''
+    let child
+    try {
+      child = spawn(cmd, [path], { stdio: ['ignore', 'pipe', 'pipe'], timeout: timeoutMs })
+    } catch (err) {
+      resolve({ code: null, stdout, stderr, error: (err as Error).message })
+      return
+    }
+    child.stdout.on('data', d => (stdout += d))
+    child.stderr.on('data', d => (stderr += d))
+    child.on('error', err => resolve({ code: null, stdout, stderr, error: err.message }))
+    child.on('close', code => resolve({ code, stdout, stderr }))
+  })
+}
+
+/**
+ * Map a transcribe-voice run to an outcome. Exit 3 and 4 are its two refusals
+ * of a clip with no usable speech; Voxtral answers silence with an invented
+ * sentence at exit 0, which is what those gates exist for.
+ */
+export function classifyTranscription(r: TranscribeRun): Transcription {
+  const why = (r.stderr.trim() || r.error || `exit ${r.code}`).slice(0, 300)
+  if (r.code === 0) {
+    const text = r.stdout.trim()
+    return text ? { status: 'ok', text } : { status: 'failed', reason: 'empty transcript' }
+  }
+  if (r.code === 3 || r.code === 4) return { status: 'refused', reason: why }
+  return { status: 'failed', reason: why }
+}
+
+/** The content line for a transcribed voice note; a refusal carries no text. */
+export function transcriptLine(t: Transcription): string {
+  switch (t.status) {
+    case 'ok':
+      return `(Sprachnachricht, transkribiert) ${t.text}`
+    case 'refused':
+      return `(Sprachnachricht — Transkription abgelehnt, keine verwertbare Sprache: ${t.reason})`
+    case 'failed':
+      return `(Sprachnachricht — Transkription fehlgeschlagen: ${t.reason})`
+  }
+}
+
 export async function handleReceiveNotification(
   payload: ReceivePayload,
   config: Config,
@@ -1403,6 +1472,16 @@ export async function handleReceiveNotification(
     meta.attachment_error = errors.join('; ').slice(0, 500)
   }
 
+  // A voice note is transcribed before it is emitted, so the session receives
+  // the words rather than a path it has to run transcribe-voice on.
+  const voice = copied.find(c => c.kind === 'audio' && c.voiceNote)
+  if (voice && config.transcribeCmd) {
+    const t = classifyTranscription(await runTranscribe(config.transcribeCmd, voice.path))
+    meta.transcript_status = t.status
+    const line = transcriptLine(t)
+    content = rawText ? `${rawText}\n${line}` : line
+  }
+
   if (!content && !copied.length && !dataMessage.sticker) {
     // Empty frame (rare, e.g. delivery of just a receipt-like envelope that
     // slipped through earlier filters). Skip rather than emit an empty event.
@@ -1569,7 +1648,7 @@ const INSTRUCTIONS =
   '`react` sends an emoji reaction to a specific inbound message (pass its `timestamp` + `user_uuid` as target_author). ' +
   '`typing` manually toggles the typing indicator for long-running work (auto-managed otherwise). ' +
   'When a channel event carries `image_path`, `audio_path`, or `file_path` in meta, use the Read tool on that absolute path — it is a file the user attached. ' +
-  '`voice_note="true"` means the user sent an audio message whose bytes live at `audio_path`; the adapter does not transcribe, and you cannot process audio content directly — acknowledge and ask them to type what they said if you need to act on it. ' +
+  '`voice_note="true"` means the user sent an audio message whose bytes live at `audio_path`. Where the host sets `SIGNAL_TRANSCRIBE_CMD`, the adapter has already transcribed it: `transcript_status="ok"` means the content is the transcript — act on it as if it had been typed; `refused` means the script found no usable speech, so ask for the message again and do not guess; `failed` names the error. Without `transcript_status` the adapter did not transcribe, and you cannot process audio content directly — run a transcription on `audio_path` or ask them to type it. ' +
   '`attachments_json` (if present) is a JSON array listing ALL attachments when a DM had multiple. ' +
   '`quote_timestamp` + `quote_author` + `quote_text` indicate the user replied to a previous message; use `quote_timestamp` when calling `reply` with `quote_timestamp` to thread the response. ' +
   'Permission prompts are forwarded to the same DM thread as replies; the user answers with "yes <id>" or "no <id>". ' +

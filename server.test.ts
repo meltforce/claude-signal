@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
+  chmodSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -81,6 +82,7 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
     typingTimeoutMs: 5_000,
     debugDumpEvents: false,
     parseMarkdown: true,
+    transcribeCmd: null,
     ...overrides,
   }
 }
@@ -540,6 +542,66 @@ describe('handleReceiveNotification', () => {
     expect(meta.audio_path).toContain('.ogg')
     expect(meta.voice_note).toBe('true')
     expect(notifications[0]!.params?.content).toStartWith('(Sprachnachricht')
+  })
+
+  function fakeTranscriber(body: string): string {
+    const p = join(tmpInbox, 'fake-transcribe')
+    writeFileSync(p, `#!/bin/sh\n${body}\n`)
+    chmodSync(p, 0o755)
+    return p
+  }
+
+  async function voiceNote(config: Config, message: string | null = null) {
+    writeFileSync(join(tmpAttach, 'voice-1'), 'oggdata')
+    const { sink, notifications } = makeSink()
+    const { sender } = makeFakeSender()
+    await handleReceiveNotification(
+      buildPayload({
+        dataMessage: {
+          timestamp: 1,
+          message,
+          attachments: [{ id: 'voice-1', contentType: 'audio/ogg', isVoiceNote: true }],
+        },
+      }),
+      config,
+      sink,
+      sender,
+    )
+    return {
+      content: notifications[0]!.params?.content as string,
+      meta: notifications[0]!.params?.meta as Record<string, string>,
+    }
+  }
+
+  test('voice note with a transcriber → the transcript is the content', async () => {
+    const cmd = fakeTranscriber('test -f "$1" && echo "Schieb die Aufgabe auf morgen"')
+    const { content, meta } = await voiceNote(makeConfig({ transcribeCmd: cmd }))
+    expect(content).toBe('(Sprachnachricht, transkribiert) Schieb die Aufgabe auf morgen')
+    expect(meta.transcript_status).toBe('ok')
+    expect(meta.audio_path).toContain('.ogg')
+    expect(meta.voice_note).toBe('true')
+  })
+
+  test('voice note with a caption keeps the caption above the transcript', async () => {
+    const cmd = fakeTranscriber('echo "Hallo"')
+    const { content } = await voiceNote(makeConfig({ transcribeCmd: cmd }), 'kurz:')
+    expect(content).toBe('kurz:\n(Sprachnachricht, transkribiert) Hallo')
+  })
+
+  test('a refused clip (exit 3) carries the reason and no transcript', async () => {
+    const cmd = fakeTranscriber('echo "invented sentence"; echo "mean volume -47.2 dB" >&2; exit 3')
+    const { content, meta } = await voiceNote(makeConfig({ transcribeCmd: cmd }))
+    expect(meta.transcript_status).toBe('refused')
+    expect(content).toContain('abgelehnt')
+    expect(content).toContain('-47.2 dB')
+    expect(content).not.toContain('invented')
+  })
+
+  test('a missing transcriber still emits the voice note', async () => {
+    const { content, meta } = await voiceNote(makeConfig({ transcribeCmd: '/nonexistent/transcribe' }))
+    expect(meta.transcript_status).toBe('failed')
+    expect(content).toContain('fehlgeschlagen')
+    expect(meta.audio_path).toContain('.ogg')
   })
 
   test('multiple attachments surface in attachments_json', async () => {

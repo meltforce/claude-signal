@@ -55,6 +55,7 @@ bun install
 | `SIGNAL_DEFAULT_RECIPIENT`    |          | —                                                         | Fallback for `reply` / target for `push`           |
 | `SIGNAL_ATTACH_DIR`           |          | `/home/claude/.local/share/signal-cli/attachments`        | Where signal-cli stores inbound attachment blobs   |
 | `SIGNAL_INBOX_DIR`            |          | `/tmp/claude-signal-inbox`                                | Plugin-owned inbox for copied attachments          |
+| `SIGNAL_TRANSCRIBE_CMD`       |          | _(unset — no transcription)_                              | Executable called as `<cmd> <audio path>` for each voice note, with `transcribe-voice`'s contract (transcript on stdout at exit 0, refusal at exit 3/4). The event then carries the transcript as content and `transcript_status` (`ok`, `refused`, `failed`) in meta. juno sets it |
 | `SIGNAL_MAX_ATTACHMENT_BYTES` |          | `104857600` (100 MB)                                      | Refuse to copy larger inbound files                |
 | `SIGNAL_MAX_SEND_BYTES`       |          | `99614720` (95 MB)                                        | Refuse to send larger outbound files               |
 | `SIGNAL_SEND_READ_RECEIPTS`   |          | `1`                                                       | Set `0` to stop sending read receipts              |
