@@ -36,6 +36,11 @@ export type Config = {
   parseMarkdown: boolean
   /** Executable called as `<cmd> <audio path>` for a voice note; null = off. */
   transcribeCmd: string | null
+  /**
+   * Whether this server takes Claude Code's permission prompts. A host that
+   * relays them on another channel turns it off, so a prompt arrives once.
+   */
+  permissionRelay: boolean
 }
 
 const E164_RE = /^\+[1-9][0-9]{6,14}$/
@@ -128,6 +133,7 @@ export function loadConfig(): Config {
   const debugDumpEvents = parseBool(process.env.SIGNAL_DEBUG_DUMP_EVENTS, false)
   const parseMarkdown = parseBool(process.env.SIGNAL_PARSE_MARKDOWN, true)
   const transcribeCmd = process.env.SIGNAL_TRANSCRIBE_CMD?.trim() || null
+  const permissionRelay = parseBool(process.env.SIGNAL_PERMISSION_RELAY, true)
 
   return {
     account: account!,
@@ -143,6 +149,7 @@ export function loadConfig(): Config {
     debugDumpEvents,
     parseMarkdown,
     transcribeCmd,
+    permissionRelay,
   }
 }
 
@@ -1664,7 +1671,7 @@ export function buildMcpServer(
       capabilities: {
         experimental: {
           'claude/channel': {},
-          'claude/channel/permission': {},
+          ...(config.permissionRelay ? { 'claude/channel/permission': {} } : {}),
         },
         tools: {},
       },
@@ -1853,7 +1860,7 @@ export function buildMcpServer(
     }
   })
 
-  mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
+  if (config.permissionRelay) mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
     const msg =
       `🔐 Claude wants to run *${params.tool_name}*:\n` +
       `${params.description}\n\n` +

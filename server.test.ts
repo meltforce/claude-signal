@@ -83,6 +83,7 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
     debugDumpEvents: false,
     parseMarkdown: true,
     transcribeCmd: null,
+    permissionRelay: true,
     ...overrides,
   }
 }
