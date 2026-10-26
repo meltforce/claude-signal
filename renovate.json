@@ -1,0 +1,39 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Headless Renovate (no PR workflow; preset: homelab/default.json). It watches package.json and bun.lock. A new version lands on main as a commit; it reaches juno at the next `homelab-apply --tags mcp` (mcp-wiring clones main to /opt/claude-signal and runs `bun install`) and takes effect when the assistant's session restarts.",
+  "extends": [
+    "local>meltforce.net/homelab"
+  ],
+  "lockFileMaintenance": {
+    "description": "Transitive dependencies are not pinned in the manifests and move only through bun.lock: one commit a week that relocks them.",
+    "enabled": true,
+    "schedule": [
+      "* 0-5 * * 1"
+    ]
+  },
+  "packageRules": [
+    {
+      "description": "A release is three days old before it is taken, so a broken release is usually withdrawn or fixed before it reaches main. This repository has no CI that tests a bump; the undo is a revert of the commit.",
+      "matchUpdateTypes": [
+        "minor",
+        "patch",
+        "pin",
+        "digest"
+      ],
+      "minimumReleaseAge": "3 days"
+    },
+    {
+      "description": "Every dependency shares package.json and bun.lock (read by the bun manager); separate branches conflict with each other and stall (seen in nutrak on 2026-08-01). One branch for all non-major updates.",
+      "matchManagers": [
+        "bun"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch",
+        "pin",
+        "digest"
+      ],
+      "groupName": "bun non-major"
+    }
+  ]
+}
